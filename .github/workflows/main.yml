@@ -1,0 +1,76 @@
+name: Build Android Release APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+jobs:
+  build-release:
+    runs-on: ubuntu-latest
+    env:
+      NODE_VERSION: 18
+      ANDROID_SDK_ROOT: ${{ env.ANDROID_SDK_ROOT }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build React web assets
+        run: npm run build
+
+      - name: Install Capacitor CLI and Android platform
+        run: |
+          npm install --no-save @capacitor/cli @capacitor/android
+          npx cap add android || true
+          npx cap copy android
+
+      - name: Setup Android SDK
+        uses: r0adkll/setup-android@v2
+        with:
+          api-levels: 33
+          build-tools: "33.0.2"
+          components: "platform-tools,build-tools;33.0.2,platforms;android-33"
+          ndk: "21.4.7075529"
+
+      - name: Decode Keystore
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+        run: |
+          if [ -z "$KEYSTORE_BASE64" ]; then echo "Missing KEYSTORE_BASE64 secret"; exit 1; fi
+          echo "$KEYSTORE_BASE64" | base64 --decode > android/app/my-release-key.jks
+
+      - name: Create gradle.properties for signing
+        env:
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+        run: |
+          if [ -z "$KEYSTORE_PASSWORD" ] || [ -z "$KEY_PASSWORD" ] || [ -z "$KEY_ALIAS" ]; then
+            echo "One of the keystore secrets is missing"; exit 1;
+          fi
+          cat > android/gradle.properties <<EOF
+          MYAPP_RELEASE_STORE_FILE=my-release-key.jks
+          MYAPP_RELEASE_KEY_ALIAS=${KEY_ALIAS}
+          MYAPP_RELEASE_STORE_PASSWORD=${KEYSTORE_PASSWORD}
+          MYAPP_RELEASE_KEY_PASSWORD=${KEY_PASSWORD}
+          EOF
+          ls -l android/app
+
+      - name: Build Release APK
+        working-directory: android
+        run: ./gradlew :app:assembleRelease --no-daemon
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-release-apk
+          path: android/app/build/outputs/apk/release/*.apk
